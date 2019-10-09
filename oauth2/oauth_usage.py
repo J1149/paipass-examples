@@ -1,5 +1,4 @@
 from flask import Flask, request, redirect
-from flask_ngrok import run_with_ngrok
 from getpass import getpass
 import json
 import os
@@ -9,21 +8,111 @@ import sys
 from urllib.parse import urlencode
 
 PAIPASS_API_URL = r'https://api.demo.p19dev.com/'
-PAIPASS_USER_DATA_URL = r'https://api.demo.p19dev.com/attributes/paipass/user.data/0'
+PAIPASS_USER_DATA_URL = PAIPASS_API_URL + r'attributes/paipass/user.data/0'
 CLIENT_INFO_PATH = r'client_info.txt'
 
 app = Flask(__name__)
-run_with_ngrok(app)
 
+
+class IllegalStateError(Exception):
+    '''
+    A state error that corresponds to a ClientInfo instance. Specifically,
+    this is raised when that instance did not use the syntax of:
+        
+        with client_info_instance:
+            ... do arbitrary things with client_info_instance ...
+    
+    and instead probably did:
+
+        ... do arbitrary things with client_info_instance ...
+
+    The context manager "with" syntax is required.
+    '''
+    pass
+
+
+class ClientInfo:
+    '''
+    This is simply a helper class to keep the client info data
+    easily accessible, modifiable, and consistent.
+    '''
+    def __init__(self, info_path=None, data=None):
+        self.data = data
+        
+        if info_path is None:
+            self.info_path = CLIENT_INFO_PATH
+        else:
+            self.info_path = info_path
+
+        self.entered = False
+        self.updated = False
+
+    def __enter__(self):
+        self.entered = True
+
+        if self.data is not None:
+            return self
+
+        if os.path.exists(self.info_path):
+            with open(self.info_path, 'r') as f:
+                self.data = json.load(f)
+        else:
+            self.data = {}
+
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self.entered = False
+        # Let's not write a new file if the data hasn't been updated.
+        if not self.updated:
+            return
+        # No traceback; everything seems to have run correctly.
+        if tb is None:
+            with open(self.info_path, 'w') as f:
+                json.dump(self.data, f)
+        # If there is a traceback, let's save to a backup file. 
+        else:
+            # lets_make a unique backup path using the time in milliseconds
+            import time
+            millis = str(int(round(time.time()*1000)))
+            backup_path = self.info_path + '.' + millis +  '.traceback_sav'
+            with open(backup_path, 'w' ):
+                json.dump(self.data, f)
+
+    def __setitem__(self, key, value):
+        self.verify_entrance()
+        self.data[key] = value
+
+    def __getitem__(self, key):
+        self.verify_entrance()
+        return self.data[key]
+
+    def _err_msg(self):
+        m = "The data of %s was accessed without using the context " \
+                + " manager synax of with client_info_instance:"
+        return m
+
+    def update(self, data2):
+        self.verify_entrance()
+        self.data.update(data2)
+
+    def verify_entrance(self):
+        if not self.entered:
+            raise IllegalStateError(self._err_msg())
 
 def generate_nonce(length=8):
     """Generate pseudorandom number.
-    https://stackoverflow.com/questions/5590170/what-is-the-standard-method-for-generating-a-nonce-in-python
+    https://stackoverflow.com/questions/5590170
     """
     return ''.join([str(random.randint(0, 9)) for i in range(length)])
 
 @app.route("/")
 def index():
+    '''
+    In this method we display the index.
+    '''
+    # We disable the button to grab client info until we have saved
+    # the registered app data in CLIENT_INFO_PATH,
     grab_client_info_state = 'disabled'
     if os.path.exists(CLIENT_INFO_PATH):
         grab_client_info_state = ''
@@ -35,89 +124,78 @@ def index():
 
 @app.route("/grab-client-info")
 def grab_client_info():
-    s = ""
-    with open(CLIENT_INFO_PATH, 'r') as f:
-        for line in f:
-            s += line
-    data = json.loads(s)
-    client_secret = data['clientSecret']
-    client_id = data['clientId']
-    redirect_uri = data['redirect_uri']
-    response_type = 'code'
+    '''
+    This is the point where we begin the process of requesting info from the
+    user. Specifically, we redirect the user to paipass to allow the user
+    to authorize us to view their data.
+    '''
+    url = PAIPASS_API_URL + "oauth/authorize?"
+
     scope = r'READ_ALL.PAIPASS.SSO'
-    url = PAIPASS_API_URL + "oauth/authorize"
-    url += r'?client_id=%s'% client_id
-    url += r'&'
-    url += r'redirect_uri=%s'% redirect_uri
-    url += r'&'
-    url += r'response_type=%s' % response_type
-    url += r'&'
-    url += r'scope=%s' % scope
-    url += r'&'
-    url += r'state=%s' % str(generate_nonce(6))
-    return redirect(url)
+
+    with client_info as ci:
+        body = {"client_id":     ci['clientId'],
+                "redirect_uri":  ci['redirect_uri'],
+                "response_type": 'code',
+                "scope":         scope,
+                "state":         generate_nonce(6)}
+
+    url_token = ''.join([url, urlencode(body)])
+
+    return redirect(url_token)
 
 @app.route("/receive-token")
 def receive_token():
-    print('request.data', request.data, file=sys.stderr)
-    print('request.form', request.form, file=sys.stderr)
-    print('request.args', request.args, file=sys.stderr)
+    '''
+    This is where we receive the token from the server after the user has
+    authorized us to use their data.
+
+    Notice that this endpoint corresponds to the endpoint we specified on the
+    page where we were registered the app.
+    '''
     auth_code = request.args['code']
-    with open('log.txt', 'w') as f:
-        f.write("auth_code=%s\n"%auth_code)
-    s = ""
-    with open(CLIENT_INFO_PATH, 'r') as f:
-        for line in f:
-             s += line   
-    data = json.loads(s)
     url = PAIPASS_API_URL + "oauth/token?"
-    body = {'grant_type': 'authorization_code',
-            'code':auth_code,
-            'redirect_uri': data['redirect_uri'],
-            'client_id':data['clientId']}
+
+    with client_info as ci:
+        body = {'grant_type':   'authorization_code',
+                'code':         auth_code,
+                'redirect_uri': ci['redirect_uri'],
+                'client_id':    ci['clientId']}
+
     url_token = ''.join([url, urlencode(body)])
     headers = {'content-type': 'application/x-www-form-urlencoded'}
     
-    response = requests.post(url_token, 
-                             auth=(data["clientId"], data["clientSecret"]),
-                             headers=headers)
-    data["access_token"] = response.json()["access_token"]
+    with client_info as ci:
+        auth = (ci["clientId"], ci["clientSecret"])
 
-    with open(CLIENT_INFO_PATH, 'w') as f:
-        f.write(json.dumps(data))
-        
+    response = requests.post(url_token, auth=auth, headers=headers)
+
+    with client_info as ci:
+        ci["access_token"] = response.json()["access_token"]
 
     return redirect('/get-info')
 
 @app.route("/get-info")
 def get_info():
-    s = ""
-    with open(CLIENT_INFO_PATH, 'r') as f:
-         for line in f:
-             s+= line
-    data = json.loads(s)
-    access_token = data["access_token"]
+    '''
+    At this we can use the access_token retrieved in receive_toke() to
+    request the User's data.
+    '''
+    with client_info as ci:
+        access_token = ci["access_token"]
     auth_header = 'Bearer {0}'.format(access_token)
     headers = {"Authorization": auth_header,
                "Accept": 'application/json',
                "Content-type": 'application/json;charset=utf-8'}
     r = requests.get(PAIPASS_USER_DATA_URL, headers=headers)
-    with open('log.txt', 'a') as f:
-        f.write('request.data=%s\n'%str(request.data))
-        f.write('request.form=%s\n'%str(request.form))
-        f.write('request.args=%s\n'%str(request.args))
-        for attr in dir(r):
-            if not attr.startswith('__'):
-                f.write('%s=%s\n'%(attr, getattr(r, attr)))
-        try:
-            f.write("request.json=%s"%request.json())
-        except:
-            pass
     return json.dumps(json.loads(r.text), indent=2)
        
 
 @app.route("/register-app")
 def app_registration():
+    """
+    A simple HTML page to register an app for oauth.
+    """
     html = """
             <form action="/post-registration" method="post" enctype="application/json">
             <div>
@@ -172,162 +250,58 @@ def app_registration():
 
 @app.route("/post-registration", methods=['POST'])
 def post_registration():
-    data = request.form
-    app_info = AppInfo()
-    for param, param_type in params_and_types.items():
-        val = data[param]
-        if param_type == list:
-            # we don't handle multiple redirect uris yet.
-            # so we have a one element list for this case.
-            lst = []
-            lst.append(val)
-            setattr(app_info, param, lst)
-        else:
-            val = param_type(val)
-            setattr(app_info, param, val)
+    """
+    Here we post the registration after we have filled in the registration
+    form rendered by app_registration().
+    """
+    app_registration = request.form
+    
     session = requests.Session()
-    username = data["username"]
-    password = data["password"]
-    login(session,username=username,password=password)
-    response = register_app(session, app_info=app_info)
-    json_dict = response.json()
-    json_dict["redirect_uri"] = data["webServerRedirectURIs"]
-    with open(CLIENT_INFO_PATH, 'w') as f:
-        f.write(json.dumps(json_dict))
+    login_response = login(session, app_registration)
+
+    registration_response = register_app(session, app_registration)
+
+    json_dict = registration_response.json()
+    json_dict["redirect_uri"] = app_registration["webServerRedirectURIs"]
+    with client_info:
+        client_info.update(json_dict)
     return redirect("/", code=302)
     
 
-class AppRegistrationException(Exception):
-    pass
+app_registration_params = ['name', 'namespace', 'homePageURL',
+                           'description', 'webServerRedirectURIs',
+                           'logoURL', 'isPrivate']
 
 
-class ValidatedParam:
-
-    def __init__(self, storage_name=None, storage_type=None):
-        self.storage_name = storage_name
-        self.storage_type = storage_type
-
-    def __set__(self, instance, value):
-        self.validate_type(instance, value)
-        self.validate()
-        instance.__dict__[self.storage_name] = value
-
-    def __get__(self, instance, owner):
-        return getattr(instance, self.storage_name)
-
-    def validate_type(self, instance, value):
-        if type(value) != self.storage_type:
-            err = ("Expected type for %s is %s but we received the following" 
-                   " type instead: %s.")
-            err_parameterized = err % (self.storage_name, self.storage_type, 
-                                       type(value))
-
-            raise AppRegistrationException(err_parameterized)
-
-    def validate(self):
-        pass
-
-             
-class ValidatedPaipassUrl(ValidatedParam):
-    
-    def validate(self):
-        pass
-
-
-params_and_types = {'name':str, 'namespace':str, 'homePageURL':str, 
-                    'description':str, 'webServerRedirectURIs':list,
-                    'logoURL':str, 'isPrivate': bool}
-
-
-def add_app_info_params(cls):
-
-    for param in params_and_types:
-        setattr(cls, param, ValidatedParam())
-    for key, attr in cls.__dict__.items():
-        if isinstance(attr, ValidatedParam):
-            param_type = type(attr)
-            attr.storage_name = '_{}#{}'.format(param_type, key)
-            attr.storage_type = params_and_types[key]
-    return cls
-
-   
-
-@add_app_info_params
-class AppInfo:
-    pass
-    
-
-def cli_get_creds():
-    username = input("Username?")
-    password = getpass()
-    return username, password
-
-def cli_get_app_info():
-    app_info = AppInfo()
-    for param, param_type in params_and_types.items():
-        if param_type == list:
-            persist = True
-            iterable = []
-            while persist:
-                val = input("%s?"%param)
-                iterable.append(val)
-                persist = 'y' == input("Continue adding to iterable?(y/n) ")
-            setattr(app_info, param, iterable)
-        elif param_type == dict:
-            persist = True
-            d = {}
-            while persist:
-                val = input("%s?"%param)
-                key, value = val.split(':')
-                d[key] = value
-                persist = 'y' == input("Continue adding to iterable?(y/n) ")
-            setattr(app_info, param, d)
-        else:
-            val = input("%s? "%param)
-            setattr(app_info, param, param_type(val))
-    return app_info
-
-def login(session=None, username=None, password=None, get_creds=None):
-    if get_creds is None:
-        get_creds = cli_get_creds
-    if session is None:
-        session = requests.Session()    
-    if username is None and password is None:
-        username, password = get_creds()
+def login(session, app_registration):
+    """
+    Login so we can register the app.
+    """
+    username = app_registration["username"]
+    password = app_registration["password"]
     headers = {'content-type': 'application/x-www-form-urlencoded'}
     params = {'username':username, 'password':password}
     response = session.post(PAIPASS_API_URL + r'account/make-login', 
                             headers=headers, params=params)
     return response
 
-def register_app(session, app_info=None, get_app_info=None):
-    if get_app_info is None:
-        get_app_info = cli_get_app_info
-    if app_info is None:
-        app_info = get_app_info()
+def register_app(session, app_registration):
+    # Register the app with the authenticated session generated by login().
+    sparse_info = {}
+    for param in app_registration_params:
+        sparse_info[param] = app_registration[param]
+    # Web server redirect URIs must be in list form
+    val = sparse_info['webServerRedirectURIs']
+    l = list()
+    l.append(val)
+    sparse_info['webServerRedirectURIs'] =l
+    # isPrivate must be a bool type
+    sparse_info['isPrivate'] = bool(sparse_info['isPrivate'])
     headers = {'content-type':'application/json'}
-    params = {}
-    for param in params_and_types:
-        params[param] = getattr(app_info, param)
-    print(params)
     response = session.post(PAIPASS_API_URL + r'application', headers=headers, 
-                            json=params)
+                            json=sparse_info)
     return response
     
 if __name__ == '__main__':
-
-    def cli_app_registration_example():
-        session = requests.Session()
-        login_response = login(session=session)
-        print(login_response)
-        if login_response.status_code != 200:
-            exit()
-        app_reg_response = register_app(session)
-        print(app_reg_response)
-        if app_reg_response.status_code == 200:
-            print(app_reg_response.json())
-
-    def run_web_app():
-        #app.run(debug=True, port=8080)
-        app.run()
-    run_web_app()
+    client_info = ClientInfo()
+    app.run(debug=True, port=8080)
