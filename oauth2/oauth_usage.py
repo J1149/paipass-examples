@@ -7,6 +7,10 @@ import requests
 import sys
 from urllib.parse import urlencode
 
+import logging
+logging.getLogger(__name__).addHandler(logging.NullHandler())
+logger = logging.getLogger()
+
 PAIPASS_API_URL = r'https://api.demo.p19dev.com/'
 PAIPASS_USER_DATA_URL = PAIPASS_API_URL + r'attributes/paipass/user.data/0'
 CLIENT_INFO_PATH = r'client_info.txt'
@@ -65,9 +69,11 @@ class ClientInfo:
         self.entered = False
         # Let's not write a new file if the data hasn't been updated.
         if not self.updated:
+            logger.debug("Nothing to Update!")
             return
+        logger.debug("We're updating the client_info file with %s"%self.data)
         # No traceback; everything seems to have run correctly.
-        if tb is None:
+        if traceback is None:
             with open(self.info_path, 'w') as f:
                 json.dump(self.data, f)
         # If there is a traceback, let's save to a backup file. 
@@ -82,6 +88,7 @@ class ClientInfo:
     def __setitem__(self, key, value):
         self.verify_entrance()
         self.data[key] = value
+        self.updated = True
 
     def __getitem__(self, key):
         self.verify_entrance()
@@ -95,6 +102,7 @@ class ClientInfo:
     def update(self, data2):
         self.verify_entrance()
         self.data.update(data2)
+        self.updated = True
 
     def verify_entrance(self):
         if not self.entered:
