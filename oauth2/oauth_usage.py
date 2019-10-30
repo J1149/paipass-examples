@@ -78,11 +78,12 @@ class ClientInfo:
                 json.dump(self.data, f)
         # If there is a traceback, let's save to a backup file. 
         else:
+            print(traceback)
             # lets_make a unique backup path using the time in milliseconds
             import time
             millis = str(int(round(time.time()*1000)))
             backup_path = self.info_path + '.' + millis +  '.traceback_sav'
-            with open(backup_path, 'w' ):
+            with open(backup_path, 'w' ) as f:
                 json.dump(self.data, f)
 
     def __setitem__(self, key, value):
@@ -139,7 +140,7 @@ def grab_client_info():
     '''
     url = PAIPASS_API_URL + "oauth/authorize?"
 
-    scope = r'READ_ALL.PAIPASS.SSO'
+    scope = r'READ_ALL.PAIPASS.EMAIL'
 
     with client_info as ci:
         body = {"client_id":     ci['clientId'],
@@ -176,7 +177,9 @@ def receive_token():
     with client_info as ci:
         auth = (ci["clientId"], ci["clientSecret"])
 
-    response = requests.post(url_token, auth=auth, headers=headers)
+    response = requests.post(url_token,
+                             #auth=auth, 
+                             headers=headers)
 
     with client_info as ci:
         ci["access_token"] = response.json()["access_token"]

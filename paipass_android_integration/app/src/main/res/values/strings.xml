@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">Paipass Integration Example</string>
+    <string name="action_settings">Settings</string>
+    <string name="welcome_to_appauth">Welcome to AppAuth Codelab</string>
+    <string name="make_api_call">Make API Call</string>
+    <string name="make_authorization_request">Make Authorization Request</string>
+    <string name="sign_out">Sign Out</string>
+    <string name="request_complete">API Call Successful.</string>
+    <string name="request_failed">API Call Failed.</string>
+
+    <!-- tools -->
+    <string name="tools_given_name">Some FirstName</string>
+    <string name="tools_family_name">LastName</string>
+    <string name="tools_full_name">Some FirstName LastName</string>
+</resources>
